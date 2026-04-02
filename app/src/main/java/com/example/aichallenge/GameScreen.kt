@@ -1,11 +1,11 @@
 package com.example.aichallenge
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -24,15 +24,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlin.random.Random
 
 private data class FallingEmoji(
@@ -45,8 +50,13 @@ private data class FallingEmoji(
 
 private val EMOJI_POOL = listOf("😈", "👻", "💀", "🔥", "⚡", "🎃", "🦇", "🕷️")
 
+private fun spawnYAboveTop(emojiHalf: Float) = -emojiHalf * 2f
+
 private fun Rect.collidesWith(other: Rect): Boolean =
     left < other.right && right > other.left && top < other.bottom && bottom > other.top
+
+private const val PHYSICS_HZ = 120.0
+private const val MAX_PHYSICS_STEPS = 6
 
 @Composable
 fun GameScreen(
@@ -62,6 +72,28 @@ fun GameScreen(
     val playerSizePx = with(density) { playerSizeDp.toPx() }
     val emojiSizePx = with(density) { emojiSizeDp.toPx() }
     val bottomMarginPx = with(density) { bottomMarginDp.toPx() }
+    val emojiFontSp = emojiSizeDp.value.sp * 0.88f
+    val playerFontSp = playerSizeDp.value.sp * 0.9f
+
+    val textMeasurer = rememberTextMeasurer()
+    val onSurface = MaterialTheme.colorScheme.onSurface
+
+    val emojiLayouts = remember(textMeasurer, emojiFontSp, playSession) {
+        EMOJI_POOL.associateWith { emoji ->
+            textMeasurer.measure(
+                text = AnnotatedString(emoji),
+                style = TextStyle(fontSize = emojiFontSp, textAlign = TextAlign.Center),
+                constraints = Constraints(maxWidth = Constraints.Infinity)
+            )
+        }
+    }
+    val playerLayout = remember(textMeasurer, playerFontSp, playSession) {
+        textMeasurer.measure(
+            text = AnnotatedString("🙂"),
+            style = TextStyle(fontSize = playerFontSp, textAlign = TextAlign.Center),
+            constraints = Constraints(maxWidth = Constraints.Infinity)
+        )
+    }
 
     key(playSession) {
         BoxWithConstraints(modifier = modifier.fillMaxSize()) {
@@ -83,28 +115,46 @@ fun GameScreen(
 
             var lastFrameNs by remember(playSession) { mutableLongStateOf(0L) }
             var gameStartNs by remember(playSession) { mutableLongStateOf(0L) }
+            val physicsAccumulator = remember(playSession) { doubleArrayOf(0.0) }
 
             LaunchedEffect(playSession) {
                 while (true) {
                     var stopGame = false
                     withFrameNanos { frameNs ->
+                        if (widthPx <= 0f || heightPx <= 0f) {
+                            return@withFrameNanos
+                        }
                         if (gameStartNs == 0L) {
                             gameStartNs = frameNs
                             lastFrameNs = frameNs
+                            physicsAccumulator[0] = 0.0
+                            val padding = emojiHalf + 8f
+                            val x = Random.nextFloat() * (widthPx - 2 * padding) + padding
+                            emojis.add(
+                                FallingEmoji(
+                                    id = frameNs,
+                                    xCenter = x,
+                                    yCenter = spawnYAboveTop(emojiHalf),
+                                    emoji = EMOJI_POOL.random(),
+                                    fallSpeedPxPerSec = 320f
+                                )
+                            )
+                            spawnAccumulatorNs = 0L
                             return@withFrameNanos
                         }
                         val prevFrameNs = lastFrameNs
-                        val dtSec = (frameNs - prevFrameNs).coerceAtLeast(0L) / 1_000_000_000f
+                        val rawDt = (frameNs - prevFrameNs).coerceAtLeast(0L) / 1_000_000_000.0
                         lastFrameNs = frameNs
+                        val dtSec = min(0.05, rawDt).toFloat()
                         if (dtSec <= 0f) return@withFrameNanos
 
                         val elapsedSec = (frameNs - gameStartNs) / 1_000_000_000f
                         score = elapsedSec * 10f + dodged * 5f
 
-                        val minInterval = 350_000_000L
+                        val minInterval = 320_000_000L
                         val spawnIntervalNs = max(
                             minInterval,
-                            (1_200_000_000L - (elapsedSec * 35_000_000L).toLong())
+                            (750_000_000L - (elapsedSec * 28_000_000L).toLong())
                         )
 
                         spawnAccumulatorNs += (dtSec * 1_000_000_000f).toLong()
@@ -112,25 +162,33 @@ fun GameScreen(
                             spawnAccumulatorNs = 0L
                             val padding = emojiHalf + 8f
                             val x = Random.nextFloat() * (widthPx - 2 * padding) + padding
-                            val speed = 220f + min(280f, elapsedSec * 12f)
+                            val speed = 260f + min(300f, elapsedSec * 12f)
                             emojis.add(
                                 FallingEmoji(
                                     id = frameNs,
                                     xCenter = x,
-                                    yCenter = -emojiHalf,
+                                    yCenter = spawnYAboveTop(emojiHalf),
                                     emoji = EMOJI_POOL.random(),
                                     fallSpeedPxPerSec = speed
                                 )
                             )
                         }
 
-                        val iterator = emojis.listIterator()
-                        while (iterator.hasNext()) {
-                            val e = iterator.next()
-                            e.yCenter += e.fallSpeedPxPerSec * dtSec
-                            if (e.yCenter - emojiHalf > heightPx) {
-                                iterator.remove()
-                                dodged++
+                        physicsAccumulator[0] += rawDt
+                        val step = 1.0 / PHYSICS_HZ
+                        var steps = 0
+                        while (physicsAccumulator[0] >= step && steps < MAX_PHYSICS_STEPS) {
+                            physicsAccumulator[0] -= step
+                            steps++
+                            val fixedDt = step.toFloat()
+                            val iterator = emojis.listIterator()
+                            while (iterator.hasNext()) {
+                                val e = iterator.next()
+                                e.yCenter += e.fallSpeedPxPerSec * fixedDt
+                                if (e.yCenter - emojiHalf > heightPx) {
+                                    iterator.remove()
+                                    dodged++
+                                }
                             }
                         }
 
@@ -168,38 +226,40 @@ fun GameScreen(
                         }
                     }
             ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    emojis.forEach { e ->
+                        val layout = emojiLayouts[e.emoji] ?: return@forEach
+                        val w = layout.size.width.toFloat()
+                        val h = layout.size.height.toFloat()
+                        translate(e.xCenter - w / 2f, e.yCenter - h / 2f) {
+                            drawText(
+                                textLayoutResult = layout,
+                                color = onSurface
+                            )
+                        }
+                    }
+                    val pw = playerLayout.size.width.toFloat()
+                    val ph = playerLayout.size.height.toFloat()
+                    val playerTop = heightPx - bottomMarginPx - playerSizePx
+                    translate(
+                        playerCenterX - pw / 2f,
+                        playerTop + (playerSizePx - ph) / 2f
+                    ) {
+                        drawText(
+                            textLayoutResult = playerLayout,
+                            color = onSurface
+                        )
+                    }
+                }
+
                 Text(
                     text = "Score: ${score.toInt()}",
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(16.dp),
                     fontSize = 22.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                emojis.forEach { e ->
-                    Text(
-                        text = e.emoji,
-                        fontSize = emojiSizeDp.value.sp * 0.85f,
-                        modifier = Modifier.offset {
-                            IntOffset(
-                                (e.xCenter - emojiHalf).roundToInt(),
-                                (e.yCenter - emojiHalf).roundToInt()
-                            )
-                        }
-                    )
-                }
-
-                Text(
-                    text = "🙂",
-                    fontSize = playerSizeDp.value.sp * 0.9f,
-                    modifier = Modifier.offset {
-                        IntOffset(
-                            (playerCenterX - playerHalf).roundToInt(),
-                            (heightPx - bottomMarginPx - playerSizePx).roundToInt()
-                        )
-                    }
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }
